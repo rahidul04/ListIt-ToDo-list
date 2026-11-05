@@ -18,10 +18,15 @@ function App() {
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem(THEME_KEY) === 'dark');
   const [page, setPage] = useState(tasks.length ? 'list' : 'home');
   const [text, setText] = useState('');
-  const [reminder, setReminder] = useState('');
   const [filter, setFilter] = useState('all');
   const [dragging, setDragging] = useState(null);
+  const [reminderTaskId, setReminderTaskId] = useState(null);
+  const [reminderDraft, setReminderDraft] = useState('');
+  const [showCelebration, setShowCelebration] = useState(false);
   const inputRef = useRef(null);
+  const wasAllComplete = useRef(false);
+  const doneCount = useMemo(() => tasks.filter(task => task.done).length, [tasks]);
+  const visibleTasks = useMemo(() => tasks.filter(task => filter === 'all' || (filter === 'active' ? !task.done : task.done)), [tasks, filter]);
 
   useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks)); }, [tasks]);
   useEffect(() => { localStorage.setItem(TOPIC_KEY, topic); }, [topic]);
@@ -30,38 +35,83 @@ function App() {
     document.documentElement.dataset.theme = darkMode ? 'dark' : 'light';
   }, [darkMode]);
   useEffect(() => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const timers = [];
+    tasks.forEach(task => {
+      if (!task.reminder) return;
+      const dueAt = new Date(task.reminder).getTime();
+      if (dueAt <= Date.now()) return;
+      const notifyWhenDue = () => {
+        const remaining = dueAt - Date.now();
+        if (remaining > 0) {
+          timers.push(window.setTimeout(notifyWhenDue, Math.min(remaining, 2147483647)));
+        } else {
+          new Notification('ListIt reminder', { body: task.title, tag: task.id });
+        }
+      };
+      timers.push(window.setTimeout(notifyWhenDue, Math.min(dueAt - Date.now(), 2147483647)));
+    });
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [tasks]);
+  useEffect(() => {
     if (page === 'list') inputRef.current?.focus();
   }, [page]);
 
-  const doneCount = useMemo(() => tasks.filter(task => task.done).length, [tasks]);
-  const visibleTasks = useMemo(() => tasks.filter(task => filter === 'all' || (filter === 'active' ? !task.done : task.done)), [tasks, filter]);
+  useEffect(() => {
+    const allComplete = tasks.length > 0 && doneCount === tasks.length;
+    if (allComplete && !wasAllComplete.current) {
+      setShowCelebration(true);
+      const timer = window.setTimeout(() => setShowCelebration(false), 4300);
+      wasAllComplete.current = true;
+      return () => window.clearTimeout(timer);
+    }
+    if (!allComplete) {
+      wasAllComplete.current = false;
+      setShowCelebration(false);
+    }
+  }, [tasks.length, doneCount]);
 
   function addTask(event) {
     event?.preventDefault();
     const title = text.trim();
     if (!title) { inputRef.current?.focus(); return; }
+    setTasks(current => [...current, { id: makeId(), title, done: false, reminder: null, createdAt: Date.now() }]);
+    setText(''); inputRef.current?.focus();
+  }
+
+  async function setTaskReminder(id, value) {
     let reminderAt = null;
-    if (reminder) {
-      const date = new Date(reminder);
+    if (value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime()) || date <= new Date()) return;
       reminderAt = date.toISOString();
-      if (date > new Date() && 'Notification' in window && Notification.permission === 'granted') {
-        const delay = date.getTime() - Date.now();
-        window.setTimeout(() => new Notification('A little reminder', { body: title }), Math.min(delay, 2147483647));
-      } else if (date > new Date() && 'Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission().then(permission => {
-          if (permission === 'granted') {
-            const delay = date.getTime() - Date.now();
-            window.setTimeout(() => new Notification('A little reminder', { body: title }), Math.min(delay, 2147483647));
-          }
-        });
+      if ('Notification' in window && Notification.permission === 'default') {
+        await Notification.requestPermission().catch(() => 'denied');
       }
     }
-    setTasks(current => [...current, { id: makeId(), title, done: false, reminder: reminderAt, createdAt: Date.now() }]);
-    setText(''); setReminder(''); inputRef.current?.focus();
+    setTasks(current => current.map(task => task.id === id ? { ...task, reminder: reminderAt } : task));
   }
 
   function toggleTask(id) { setTasks(current => current.map(task => task.id === id ? { ...task, done: !task.done } : task)); }
   function removeTask(id) { setTasks(current => current.filter(task => task.id !== id)); }
+  function openReminderEditor(task) {
+    const defaultTime = Date.now() + 60 * 60 * 1000;
+    const savedReminderIsFuture = task.reminder && new Date(task.reminder).getTime() > Date.now();
+    const time = savedReminderIsFuture ? new Date(task.reminder) : new Date(defaultTime);
+    setReminderDraft(`${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`);
+    setReminderTaskId(task.id);
+  }
+  async function saveReminder(event) {
+    event.preventDefault();
+    if (!reminderTaskId || !reminderDraft) return;
+    const [hours, minutes] = reminderDraft.split(':').map(Number);
+    const dueAt = new Date();
+    dueAt.setHours(hours, minutes, 0, 0);
+    if (dueAt <= new Date()) dueAt.setDate(dueAt.getDate() + 1);
+    await setTaskReminder(reminderTaskId, dueAt.toISOString());
+    setReminderTaskId(null);
+    setReminderDraft('');
+  }
   function reorder(targetId) {
     if (!dragging || dragging === targetId) return;
     setTasks(current => {
@@ -74,7 +124,7 @@ function App() {
   }
   function formatReminder(iso) {
     const date = new Date(iso);
-    return `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} · ${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+    return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   }
 
   return (
@@ -105,8 +155,6 @@ function App() {
           <form className="add-card" onSubmit={addTask}>
             <span className="input-plus"><Plus size={19} /></span>
             <input ref={inputRef} className="task-input" value={text} onChange={event => setText(event.target.value)} placeholder="What’s on your mind?" aria-label="New task" />
-            <label className={`reminder-trigger ${reminder ? 'has-reminder' : ''}`} title="Set an optional reminder"><Clock3 size={17} /><span>{reminder ? 'Reminder set' : 'Remind me'}</span><input aria-label="Optional reminder" type="datetime-local" value={reminder} min={new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)} onChange={event => setReminder(event.target.value)} /></label>
-            {reminder && <button type="button" className="clear-reminder" aria-label="Remove reminder" onClick={() => setReminder('')}><X size={14} /></button>}
             <button className="add-button" type="submit">Add task <Plus size={16} /></button>
           </form>
 
@@ -125,7 +173,7 @@ function App() {
               <article key={task.id} className={`task-row ${task.done ? 'is-done' : ''} ${dragging === task.id ? 'is-dragging' : ''}`} draggable onDragStart={() => setDragging(task.id)} onDragEnd={() => setDragging(null)} onDrop={() => reorder(task.id)}>
                 <span className="task-index">{String(index + 1).padStart(2, '0')}</span>
                 <button className={`check-button ${task.done ? 'checked' : ''}`} onClick={() => toggleTask(task.id)} aria-label={task.done ? 'Mark task as to do' : 'Mark task complete'}>{task.done && <Check size={15} strokeWidth={3} />}</button>
-                <div className="task-content"><span className="task-title">{task.title}</span>{task.reminder && <span className="task-reminder"><Bell size={12} /> {formatReminder(task.reminder)}</span>}</div>
+                <div className="task-content"><span className="task-title">{task.title}</span><div className="task-meta"><button type="button" className={`task-reminder-control ${task.reminder ? 'has-reminder' : ''}`} title="Set a reminder for this task" onClick={() => openReminderEditor(task)}><Bell size={12} /><span>{task.reminder ? formatReminder(task.reminder) : 'Add reminder'}</span></button>{task.reminder && <button className="remove-task-reminder" aria-label={`Remove reminder for ${task.title}`} onClick={() => setTaskReminder(task.id, '')}>Remove</button>}</div></div>
                 <span className="drag-handle" aria-label="Drag to reorder"><GripVertical size={18} /></span>
                 <button className="delete-button" onClick={() => removeTask(task.id)} aria-label={`Delete ${task.title}`}><Trash2 size={16} /></button>
               </article>
@@ -135,6 +183,8 @@ function App() {
           <footer className="list-footer"><span><span className="privacy-dot" /> Saved on this device</span>{tasks.length > 0 && <span>{doneCount === tasks.length ? 'Everything is done. Take a breath.' : 'Small steps still move you forward.'}</span>}</footer>
         </section>
       )}
+      {reminderTaskId && <div className="reminder-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setReminderTaskId(null); }}><form className="reminder-dialog" role="dialog" aria-modal="true" aria-labelledby="reminder-dialog-title" onSubmit={saveReminder}><button type="button" className="reminder-close" aria-label="Close reminder picker" onClick={() => setReminderTaskId(null)}><X size={17} /></button><span className="reminder-dialog-icon"><Bell size={18} /></span><span className="eyebrow">TASK REMINDER</span><h2 id="reminder-dialog-title">When should I remind you?</h2><p>Choose a time for this task.</p><label className="reminder-date-label">TIME<input autoFocus type="time" required value={reminderDraft} onChange={event => setReminderDraft(event.target.value)} /></label><div className="reminder-dialog-note"><Clock3 size={14} /> If this time has passed today, the reminder is set for tomorrow. Keep ListIt open until then.</div><div className="reminder-dialog-actions"><button type="button" className="cancel-reminder" onClick={() => setReminderTaskId(null)}>Cancel</button><button type="submit" className="save-reminder">Save reminder <Bell size={14} /></button></div></form></div>}
+      {showCelebration && <div className="celebration-pop" role="status" aria-live="polite"><span className="celebration-sparkle"><Sparkles size={19} /></span><span><strong>You did it!</strong><small>Nice progress.</small></span><span className="celebration-star">✦</span></div>}
     </main>
   );
 }
