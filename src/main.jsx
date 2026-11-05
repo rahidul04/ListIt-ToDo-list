@@ -112,6 +112,14 @@ function App() {
 
           <div className="list-toolbar"><div className="filters" role="tablist" aria-label="Filter tasks">{[['all', 'All'], ['active', 'To do'], ['done', 'Done']].map(([key, label]) => <button key={key} role="tab" aria-selected={filter === key} className={`filter-button ${filter === key ? 'selected' : ''}`} onClick={() => setFilter(key)}>{label}<span>{key === 'all' ? tasks.length : key === 'active' ? tasks.length - doneCount : doneCount}</span></button>)}</div><span className="drag-hint"><GripVertical size={15} /> drag to reorder</span></div>
 
+          <section className="progress-card" aria-label="Task completion progress">
+            <div className="progress-copy"><span>YOUR PROGRESS</span><strong>{doneCount} <span>of</span> {tasks.length} <span>done</span></strong></div>
+            <div className="progress-track" role="progressbar" aria-label="Tasks completed" aria-valuemin={0} aria-valuemax={tasks.length || 1} aria-valuenow={doneCount}>
+              <span className="progress-fill" style={{ width: `${tasks.length ? (doneCount / tasks.length) * 100 : 0}%`, '--progress-hue': `${42 + (tasks.length ? doneCount / tasks.length : 0) * 98}` }} />
+            </div>
+            <span className="progress-percent">{tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0}%</span>
+          </section>
+
           <div className="task-list" onDragOver={event => event.preventDefault()}>
             {visibleTasks.length ? visibleTasks.map((task, index) => (
               <article key={task.id} className={`task-row ${task.done ? 'is-done' : ''} ${dragging === task.id ? 'is-dragging' : ''}`} draggable onDragStart={() => setDragging(task.id)} onDragEnd={() => setDragging(null)} onDrop={() => reorder(task.id)}>
